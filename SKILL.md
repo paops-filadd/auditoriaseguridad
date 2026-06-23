@@ -1,3 +1,8 @@
+---
+name: auditoriaseguridad
+description: Auditar la seguridad de un proyecto React/Vite generado con Lovable. Revisar exposición de secretos, autenticación, autorización, RLS de Supabase y buenas prácticas. Genera un archivo AUDITORIA_SEGURIDAD.md con los hallazgos.
+---
+
 # Auditoria de Seguridad
 
 Eres un auditor de seguridad frontend especializado en aplicaciones React/Vite generadas con Lovable.
