@@ -1,6 +1,6 @@
 ---
 name: auditoriaseguridad
-description: Audita la seguridad de un proyecto Lovable (React + Supabase / Lovable Cloud) desde el agente de Lovable. Revisa secretos expuestos, RLS y policies verificadas contra la base real, escalada de privilegios, Edge Functions, Storage, Realtime, autenticación, autorización y exposición de datos en el cliente. Genera AUDITORIA_SEGURIDAD.md con hallazgos por severidad, evidencia y lo que no se pudo verificar. Usar cuando piden auditar la seguridad del proyecto, preguntan si la app es segura o está lista para producción, o antes de compartirla con usuarios reales.
+description: Audita la seguridad de un proyecto Lovable (React + Supabase / Lovable Cloud) desde el agente de Lovable. Revisa secretos expuestos, RLS y policies verificadas contra la base real, escalada de privilegios, Edge Functions (incluidos proxies a servicios externos y funciones que envían correos o mensajes en nombre de la empresa), permisos de ejecución de funciones, configuración de Auth, Storage, Realtime, autenticación, autorización y exposición de datos en el cliente. Genera AUDITORIA_SEGURIDAD.md con hallazgos por severidad, evidencia y lo que no se pudo verificar. Usar cuando piden auditar la seguridad del proyecto, preguntan si la app es segura o está lista para producción, o antes de compartirla con usuarios reales.
 ---
 
 # Auditoría de Seguridad
@@ -21,6 +21,8 @@ El entregable es `AUDITORIA_SEGURIDAD.md` en la raíz del proyecto. La correcci�
 4. **No infles el informe.** Si una categoría salió limpia, decilo explícitamente. Tres hallazgos reales valen más que veinte de relleno.
 5. **La seguridad de una app Lovable vive en Supabase**, no en el frontend. Ocultar un botón no es un control de acceso. La pregunta que cierra cada hallazgo de frontend: *si el usuario abre la consola del navegador y llama a Supabase directo con la anon key, ¿el dato sale igual?*
 6. **Antes de escribir el informe, pasá todos los hallazgos por la lista de falsos positivos.** Está más abajo y es obligatoria.
+7. **`verify_jwt` no es autenticación.** La anon key es un JWT válido del proyecto y está en el bundle: una Edge Function con `verify_jwt = true` la acepta igual. Una función solo está protegida si adentro identifica al usuario con `auth.getUser()` y, cuando la operación es privilegiada, verifica su rol.
+8. **Pensá como quien la ataca desde afuera.** Para cada Edge Function y cada RPC, la pregunta es: *¿qué pasa si la llama un desconocido con la anon key y un body armado a mano?* El atacante no usa la app: llama directo a `https://<ref>.supabase.co/functions/v1/<nombre>` y a `/rest/v1/rpc/<nombre>`.
 
 ### Severidad
 
@@ -47,6 +49,7 @@ Nunca audites a ciegas. Antes de buscar problemas, establecé:
 - **Backend.** ¿Lovable Cloud, un proyecto de Supabase conectado, o ninguno? ¿Tenés acceso para consultar la base? Eso define si la Fase 1 es verificación real o solo inferencia desde `supabase/migrations/`.
 - **Más de un Supabase.** Si en el código aparece más de una URL `*.supabase.co`, la app habla con una base que no es la del proyecto. Esa otra base no la podés consultar: su RLS va sí o sí a *Qué no pude verificar*, con el `ref` del proyecto anotado.
 - **Auditoría previa.** Si existe `AUDITORIA_SEGURIDAD.md`, leelo primero. Al final vas a marcar qué se resolvió, qué sigue abierto y qué es nuevo, **reusando los IDs anteriores**: `CRIT-001` sigue siendo `CRIT-001` aunque haya cambiado de archivo o de línea.
+- **Datos públicos a propósito.** Antes de clasificar una tabla o un bucket como "catálogo público", preguntale al usuario qué datos son públicos por diseño. No lo infieras del nombre de la tabla: un banco de preguntas con sus resoluciones puede parecer un catálogo y ser el activo principal de la empresa. Si el usuario no responde, tratá el contenido propietario (ejercicios, soluciones, material de estudio, precios internos) como privado.
 - **Escaneo de seguridad de Lovable.** Si tenés disponible el escaneo de seguridad o el linter de Supabase, corrélo y usá sus resultados como punto de partida. No los copies tal cual: cada resultado pasa por los mismos criterios de severidad y falsos positivos que el resto.
 
 ---
@@ -140,6 +143,25 @@ where n.nspname = 'public' and p.prosecdef;
 - Sin `search_path` fijo en `proconfig` → 🟡 (el `function_search_path_mutable` del linter de Supabase). Fix de una línea.
 - Toda función en `public` se puede llamar por RPC desde el cliente. Si una `security definer` modifica datos o devuelve datos de otros usuarios sin validar `auth.uid()` adentro, es un bypass de RLS: 🔴 o 🟠 según quién la pueda llamar.
 
+**Quién puede ejecutar cada función.** Postgres otorga `EXECUTE` a `public` por defecto, así que una función nueva la puede llamar cualquiera con la anon key salvo que se haya revocado:
+
+```sql
+select p.proname, p.prosecdef,
+       has_function_privilege('anon', p.oid, 'EXECUTE')          as anon_ejecuta,
+       has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth_ejecuta
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+order by p.prosecdef desc, p.proname;
+```
+
+| Situación | Veredicto |
+|---|---|
+| `security definer` + `anon_ejecuta` + modifica datos o devuelve datos de usuarios | 🔴 Cualquiera en internet la ejecuta con permisos elevados. |
+| `security definer` + solo `auth_ejecuta` + no valida `auth.uid()` adentro | 🟠 Cualquier usuario registrado opera sobre datos ajenos. |
+| Función que solo usan triggers o policies (como `has_role`) con `anon_ejecuta` | 🟡 Revocar si el flujo no la necesita por RPC. |
+
+Un error de negocio ("Estudiante no encontrado") en la respuesta prueba que la función **se ejecutó**: no es un rechazo de permisos.
+
 ### 1.7 Edge Functions
 
 - En `supabase/config.toml`, buscá `verify_jwt = false`: esa función queda abierta a internet.
@@ -150,10 +172,40 @@ where n.nspname = 'public' and p.prosecdef;
 | `verify_jwt = false` + cliente con `service_role` + sin validación interna | 🔴 Cualquiera en internet escribe en la base con permisos totales. |
 | `verify_jwt = false` en un webhook que valida firma (Stripe, Mercado Pago, WATI) | Correcto. Verificá que la validación de firma exista de verdad. |
 | `verify_jwt = false` + la función hace `auth.getUser()` con el header Authorization | Aceptable. Documentalo. |
-| `verify_jwt = true` (o ausente, que es el default) | Correcto. |
+| `verify_jwt = true` (o ausente) + la función hace `auth.getUser()` y rechaza si no hay usuario | Correcto. |
+| `verify_jwt = true` (o ausente) **sin** `auth.getUser()` adentro | Equivale a abierta: la anon key pasa el chequeo (regla 7). Evaluala con la misma severidad que si tuviera `verify_jwt = false`. |
+| La función recibe por body **el nombre de una tabla, una operación o una consulta** y la ejecuta con `service_role` | 🔴 **siempre**, tenga auth o no. Es un bypass genérico de RLS. Si es una herramienta interna de carga que la app no usa, la corrección es borrarla. |
 | `service_role` leída con `Deno.env.get(...)` dentro de la función | Normal: corre en el servidor. **No es hallazgo.** |
 
 Revisá además: si la función recibe un `user_id` por body y opera sobre él sin compararlo con el usuario del JWT, cualquier usuario autenticado opera sobre datos ajenos (🟠). `Access-Control-Allow-Origin: *` en una función que hace algo privilegiado facilita el abuso desde cualquier sitio (🟡).
+
+Listá todas las funciones de `supabase/functions/`, también las que el frontend no invoca: una función que ninguna pantalla usa sigue publicada en internet.
+
+#### 1.7.1 Funciones proxy a servicios externos
+
+Una función que lee una credencial con `Deno.env.get(...)` y hace `fetch` a otro servicio (Metabase, una API interna, n8n, un CRM) le presta esa credencial a quien la llame. Por cada una:
+
+| Control | Si falta |
+|---|---|
+| Identifica al usuario con `auth.getUser()` | 🔴 Cualquiera en internet usa la credencial de la empresa. |
+| Los recursos que pide están en una **lista fija** en el servidor (por ejemplo, los IDs de las preguntas de Metabase que usa la app) | 🔴 si acepta cualquier ID del body: un bucle sobre IDs secuenciales recorre todo el servicio. |
+| Ningún dato del body se interpola en la **ruta** de la URL sin validar su tipo (`/api/card/${questionId}` con `questionId = "../user/current"`) | 🔴 Path traversal: la request llega a otros endpoints del servicio con la credencial. Validá que sea un entero o usá `encodeURIComponent` más lista fija. |
+| Filtra por el usuario del token, no por un email o ID que manda el cliente | 🟠 Cualquier usuario registrado lee los datos de otro cambiando el email del body. |
+| Devuelve solo las filas y columnas que usa la pantalla | 🟡, o 🟠 si la respuesta trae datos personales de terceros. |
+| No reenvía al cliente el cuerpo de error del servicio externo | 🟡 Filtra URLs internas, nombres de tablas o versiones. |
+
+Para **Metabase** en particular: la credencial nunca va en el cliente (Fase 2), no se usan links públicos ni embeds firmados desde el navegador, y la cuenta de la API key debería tener acceso solo a las preguntas que la app necesita. Esto último no se ve desde el proyecto: anotalo en *Qué no pude verificar*.
+
+#### 1.7.2 Funciones que hablan en nombre de la empresa
+
+Una función que manda correos, WhatsApp, SMS o mensajes de chat (Resend, Brevo, SendGrid, WATI, Twilio, Google Chat, Slack) hace que lo enviado salga del dominio o la cuenta real de la empresa: pasa los filtros de spam y parece legítimo.
+
+| Situación | Veredicto |
+|---|---|
+| El **destinatario** viene del body y la función no identifica al usuario | 🔴 Relay abierto: phishing desde el dominio real. |
+| El **asunto o el contenido** (HTML, links) vienen del body | 🔴 sin auth, 🟠 con auth. El contenido tiene que armarse en el servidor desde un template, con el body aportando solo datos (nombre, puntaje). |
+| El destinatario es siempre el propio usuario autenticado o una lista fija | Correcto. |
+| Sin ningún límite de envíos por usuario o por hora | 🟡 Riesgo de costo y de reputación del dominio. |
 
 ### 1.8 Storage y Realtime
 
@@ -171,13 +223,36 @@ where pubname = 'supabase_realtime';
 ```
 
 - **Storage.** Un bucket con `public = true` sirve sus archivos por URL directa, sin autenticación. Si guarda comprobantes, documentos de identidad, fotos privadas o adjuntos de usuarios: 🔴. Un bucket privado sin policies sobre `storage.objects` o con policies abiertas tiene el mismo problema que una tabla.
-- **Realtime.** RLS también aplica a Realtime, así que el riesgo aparece cuando la tabla publicada ya venía sin RLS o con policy abierta. En ese caso subí la severidad: la filtración pasa a ser continua y en vivo.
+- **Listado de Storage.** Una policy de `SELECT` sobre `storage.objects` que alcanza a `anon` permite **listar** nombres de archivos y carpetas aunque no se descarguen. Si las carpetas se llaman con IDs de clientes, colegios o usuarios, el listado es un padrón: 🟡.
+- **Realtime.** RLS también aplica a Realtime, así que el riesgo aparece cuando la tabla publicada ya venía sin RLS o con policy abierta. En ese caso subí la severidad: la filtración pasa a ser continua y en vivo. Que Realtime **acepte** una suscripción anónima no prueba que entregue eventos: no lo reportes como hallazgo por sí solo. Sí anotá como informativo las tablas publicadas en `supabase_realtime` que el código no escucha (buscá `.channel(` y `postgres_changes` en `src/`): conviene sacarlas de la publicación. Si la app usa canales privados de Broadcast o Presence, revisá las policies de `realtime.messages`.
+
+### 1.9 Configuración de Auth
+
+La configuración de Supabase Auth no vive en tablas: no se consulta con SQL. Si tenés una herramienta para leer la configuración de autenticación del proyecto, usala. Si no, inferí lo que puedas y dejá el resto en *Qué no pude verificar*.
+
+```sql
+-- Autoconfirmación: cuentas confirmadas en el mismo instante en que se crearon
+select count(*) as total,
+       count(*) filter (where email_confirmed_at is not null
+                          and email_confirmed_at - created_at < interval '5 seconds') as confirmadas_al_crear
+from auth.users;
+```
+
+| Situación | Veredicto |
+|---|---|
+| Signup abierto + email sin verificar, en una app donde **otro hallazgo** empieza con "crear una cuenta" | 🟠 Es el primer paso de la cadena. |
+| Signup abierto + email sin verificar, sin otros hallazgos que dependan de él | 🟡 |
+| Signup abierto en una app de uso interno o para clientes dados de alta a mano | 🟡 Debería estar cerrado y crear las cuentas por invitación. |
+| No se pudo leer la configuración | *Qué no pude verificar*: signup habilitado, confirmación de email, largo mínimo de contraseña, protección de contraseñas filtradas, redirect URLs permitidas. |
 
 ---
 
 ## Fase 2 — Secretos
 
 - Claves de proveedores en el código: `sk-`, `sk-ant-`, `sk_live_`, `rk_live_`, `AKIA`, `AIza`, `ghp_`, `github_pat_`, `xox[baprs]-`, `SG.`, bloques `PRIVATE KEY`, y la secret key nueva de Supabase `sb_secret_`.
+- **Metabase:** API keys que empiezan con `mb_` o que viajan en el header `X-API-Key` / `X-API-KEY`, la clave de firma del embedding (`METABASE_SECRET_KEY`, `MB_EMBEDDING_SECRET_KEY`), y usuario, contraseña o token de sesión (`X-Metabase-Session`). Todas son 🔴 en el cliente: dan acceso a las bases de producción que Metabase consulta, no solo a esta app.
+- **URLs de webhook**, que son secretos aunque no lo parezcan: `chat.googleapis.com/v1/spaces/…?key=…&token=…`, `hooks.slack.com/services/…`, `discord.com/api/webhooks/…`, y URLs de n8n (`/webhook/…`). Quien la tiene publica mensajes con un nombre confiable dentro del chat interno: 🟠, o 🔴 si el canal recibe pedidos de pago, credenciales o aprobaciones.
+- **Claves que no están en el código pero llegan al cliente:** secretos guardados en tablas que el cliente puede leer, o devueltos en la respuesta de una Edge Function. Es la misma filtración por otro camino.
 - **JWT de Supabase:** por cada `eyJ...` que aparezca en archivos que llegan al cliente, decodificá el payload (la parte del medio, base64url) y mirá el campo `role`:
 
   | `role` | Veredicto |
@@ -207,6 +282,8 @@ Cada secreto encontrado va con **dónde está** y con la aclaración de que la c
 
 - `.from('tabla').select('*')` sin filtro de usuario: si RLS no lo tapa, devuelve la tabla entera. Cruzalo con la Fase 1.
 - Queries que traen objetos completos cuando la pantalla usa dos campos: si la tabla tiene columnas sensibles, se ven en la pestaña Network.
+- **Columnas, no solo tablas.** Una tabla legible por diseño puede tener columnas que no deberían serlo (resoluciones, claves de respuestas, costos, notas internas). RLS filtra filas, no columnas: la anon key lee todas las columnas de las filas visibles. La corrección es una vista con `security_invoker = true` que exponga solo las columnas públicas, o mover las columnas privadas a otra tabla.
+- **Oráculos de enumeración:** RPCs, Edge Functions o queries públicas que responden "existe / no existe" ante un ID, email o código arbitrario. Junto con un listado de Storage o IDs secuenciales, permiten armar la lista de clientes o usuarios: 🟡.
 - IDOR: pantallas que traen un registro por un ID tomado de la URL (`useParams`, `searchParams`) sin que RLS valide pertenencia.
 - `console.log` que imprimen tokens, sesiones, respuestas completas de API o datos de usuarios.
 - Comentarios y TODOs con datos reales, credenciales de prueba o URLs internas.
@@ -247,6 +324,8 @@ Esta lista es obligatoria. Reportar cualquiera de estos como problema hace que e
 | Ausencia de tests, deuda técnica, código duplicado | No es seguridad. Fuera del alcance. |
 
 Excepción que **sí** es hallazgo: una API key de Google Maps o similar en el cliente **sin restricción de dominio**. No filtra datos, pero cualquiera la usa y la factura llega igual (🟡, riesgo de costo).
+
+Una clave `AIza` se clasifica **por el servicio al que va**, no por el prefijo. Si aparece dentro de una URL de `chat.googleapis.com`, junto a un `token=`, o en llamadas a otras APIs de Google que no son de cliente, no es una clave de Maps: es un secreto (Fase 2).
 
 ---
 
@@ -303,6 +382,18 @@ veredicto en una línea.>
 ### 🟡 Medios
 <mismo formato>
 
+## ⛓️ Cadenas de ataque
+
+<Solo si dos o más hallazgos abiertos se combinan. Si no, borrá la sección.>
+
+**[CADENA-1] <qué logra el atacante al final, en una línea>**
+
+1. <paso, con el ID del hallazgo que lo habilita: "crea una cuenta sin verificar el email (MEDIO-001)">
+2. <"se asigna superadmin con la función de importación abierta (CRIT-001)">
+3. <...>
+
+- **Qué la corta:** <el hallazgo cuya corrección rompe la cadena entera>
+
 ## Qué no pude verificar
 
 | Área | Por qué | Qué haría falta |
@@ -310,6 +401,8 @@ veredicto en una línea.>
 | Historial de git | Desde Lovable no hay acceso al historial | Revisarlo desde GitHub (ver nota al pie) |
 | Dependencias vulnerables | No se puede correr `npm audit` desde Lovable | Correrlo localmente o activar Dependabot en GitHub |
 | Visibilidad del repositorio | No se ve desde Lovable | Confirmar en GitHub si el repo es público o privado |
+| <Configuración de Auth, si no se pudo leer> | | Revisar en el panel: signup, confirmación de email, contraseñas, redirect URLs |
+| <Permisos de las credenciales de servicios externos, si hay proxies> | La cuenta de Metabase u otro servicio se administra fuera del proyecto | Confirmar que la cuenta solo accede a lo que la app necesita |
 | <otras> | | |
 
 ## 🔵 Inventario
@@ -361,7 +454,7 @@ La sección *Qué no pude verificar* es obligatoria. Las tres primeras filas (hi
 
 Después de escribir el informe, cerrá tu respuesta al usuario con:
 
-1. Los tres hallazgos más graves, en una línea cada uno.
+1. Los tres hallazgos más graves, en una línea cada uno. Si hay una cadena de ataque, nombrala primero.
 2. Lo que **solo puede hacer el usuario**: rotar claves filtradas en el panel de cada proveedor, revisar la visibilidad del repo en GitHub, cambiar configuración fuera de Lovable.
 3. La oferta de corrección: *"¿Querés que aplique las correcciones? Empiezo por los críticos."*
 
@@ -439,6 +532,33 @@ Si el rol hoy vive en `profiles`, la migración tiene que: crear `user_roles`, c
 
 ```sql
 alter view public.<vista> set (security_invoker = true);
+```
+
+**Revocar la ejecución pública de una función:**
+
+```sql
+revoke execute on function public.<funcion>(<argumentos>) from public, anon;
+-- Solo si la usan usuarios logueados por RPC:
+grant execute on function public.<funcion>(<argumentos>) to authenticated;
+```
+
+**Edge Function con usuario identificado y lista fija de recursos (proxy):**
+
+```ts
+const ALLOWED_QUESTIONS = new Set([8342, 9158]);
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
+});
+const { data: { user } } = await supabase.auth.getUser();
+if (!user) return new Response("Unauthorized", { status: 401 });
+
+const { questionId } = await req.json();
+const id = Number(questionId);
+if (!Number.isInteger(id) || !ALLOWED_QUESTIONS.has(id)) {
+  return new Response("Forbidden", { status: 403 });
+}
+// Filtrar por user.email, nunca por un email que mande el cliente
 ```
 
 **Fijar `search_path` en una función:**
