@@ -39,12 +39,12 @@ Si ya existía un informe anterior, la skill lo compara: marca qué se resolvió
 
 | Severidad | Qué revisa |
 |---|---|
-| 🔴 Crítico | `service_role` y secretos en el código · variables `VITE_*` con claves privadas · tablas sin RLS · policies abiertas · escalada de privilegios por columna de rol o por `user_metadata` · vistas que saltean RLS · Edge Functions abiertas a internet · buckets públicos con archivos privados |
-| 🟠 Alto | IDOR y datos de otros usuarios accesibles · funciones RPC que no validan al usuario · Edge Functions que operan sobre un `user_id` recibido por body |
-| 🟡 Medio | Logs con datos sensibles · `security definer` sin `search_path` · errores que exponen información interna · API keys sin restricción de dominio |
-| 🔵 Informativo | Inventario de roles, rutas, servicios externos, variables y secretos |
+| 🔴 Crítico | `service_role` y secretos en el código · credenciales de Metabase en el cliente · variables `VITE_*` con claves privadas · tablas sin RLS · policies abiertas · escalada de privilegios por columna de rol o por `user_metadata` · vistas que saltean RLS · funciones `security definer` ejecutables por `anon` · Edge Functions abiertas a internet (también con `verify_jwt = true` sin `auth.getUser()`) · proxies a servicios externos sin auth, sin lista fija de recursos o con path traversal · funciones que envían correos o mensajes con destinatario o contenido del body (relay abierto) · buckets públicos con archivos privados |
+| 🟠 Alto | IDOR y datos de otros usuarios accesibles · funciones RPC que no validan al usuario · Edge Functions que operan sobre un `user_id` o email recibido por body · URLs de webhook (Google Chat, Slack, n8n) en el código · signup abierto sin verificar email cuando habilita otro hallazgo |
+| 🟡 Medio | Logs con datos sensibles · `security definer` sin `search_path` · errores que exponen información interna · API keys sin restricción de dominio · listado de Storage y oráculos de enumeración · envíos sin límite |
+| 🔵 Informativo | Inventario de roles, rutas, servicios externos, variables y secretos · tablas en Realtime que el código no usa |
 
-La severidad se asigna por **explotabilidad real**, no por categoría.
+La severidad se asigna por **explotabilidad real**, no por categoría. Antes de clasificar datos como públicos, la skill **pregunta qué es público por diseño**, y verifica la base real (permisos `EXECUTE`, policies, configuración de Auth) en lugar de inferir desde las migraciones. Cuando dos o más hallazgos se combinan, el informe los muestra como **cadenas de ataque**.
 
 ### Lo que deliberadamente NO reporta
 
