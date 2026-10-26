@@ -48,7 +48,7 @@ Nunca audites a ciegas. Antes de buscar problemas, establecé:
 
 - **Backend.** ¿Lovable Cloud, un proyecto de Supabase conectado, o ninguno? ¿Tenés acceso para consultar la base? Eso define si la Fase 1 es verificación real o solo inferencia desde `supabase/migrations/`.
 - **Más de un Supabase.** Si en el código aparece más de una URL `*.supabase.co`, la app habla con una base que no es la del proyecto. Esa otra base no la podés consultar: su RLS va sí o sí a *Qué no pude verificar*, con el `ref` del proyecto anotado.
-- **Auditoría previa.** Si existe `AUDITORIA_SEGURIDAD.md`, leelo primero. Al final vas a marcar qué se resolvió, qué sigue abierto y qué es nuevo, **reusando los IDs anteriores**: `CRIT-001` sigue siendo `CRIT-001` aunque haya cambiado de archivo o de línea.
+- **Auditoría previa.** Si existe `AUDITORIA_SEGURIDAD.md`, leelo primero. Al final vas a marcar qué se resolvió, qué sigue abierto y qué es nuevo, **reusando los IDs anteriores**: `CRIT-001` sigue siendo `CRIT-001` aunque haya cambiado de archivo o de línea. Si el informe anterior usa **IDs de otro formato** (`HIGH-`, `MED-`, `LOW-`, `CRITICAL-`, `C1`, o hallazgos sin ID), renumeralos al formato actual (ver Fase 7) y dejá la equivalencia en la *Comparación con la auditoría anterior*.
 - **Datos públicos a propósito.** Antes de clasificar una tabla o un bucket como "catálogo público", preguntale al usuario qué datos son públicos por diseño. No lo infieras del nombre de la tabla: un banco de preguntas con sus resoluciones puede parecer un catálogo y ser el activo principal de la empresa. Si el usuario no responde, tratá el contenido propietario (ejercicios, soluciones, material de estudio, precios internos) como privado.
 - **Escaneo de seguridad de Lovable.** Si tenés disponible el escaneo de seguridad o el linter de Supabase, corrélo y usá sus resultados como punto de partida. No los copies tal cual: cada resultado pasa por los mismos criterios de severidad y falsos positivos que el resto.
 
@@ -335,6 +335,8 @@ Generá `AUDITORIA_SEGURIDAD.md` en la raíz con esta estructura. El destinatari
 
 **IDs:** `CRIT-001`, `ALTO-001`, `MEDIO-001`, correlativos dentro de cada severidad. En una re-auditoría, un hallazgo abierto **conserva su ID original**; los nuevos siguen desde el último usado; nunca se recicla el ID de un hallazgo resuelto.
 
+**IDs de un formato anterior.** Si el informe previo no usa `CRIT-` / `ALTO-` / `MEDIO-`, en esta re-auditoría todos los hallazgos pasan al formato actual, según la severidad que tienen **hoy** (no la del ID viejo; los resueltos, según la severidad que tenían): por ejemplo `HIGH-002 → ALTO-001`, `MED-001 → MEDIO-001`. Numerá correlativo desde `001` en cada severidad, en el orden del informe anterior. En el cuerpo de cada hallazgo usá solo el ID nuevo, con el viejo entre paréntesis la primera vez: **[MEDIO-001] … (antes MED-001)**. En *Comparación con la auditoría anterior* agregá la tabla de equivalencias (ID anterior → ID nuevo, incluidos los resueltos). Desde la auditoría siguiente vale la regla normal de conservar el ID.
+
 ```markdown
 # Auditoría de Seguridad — <nombre del proyecto>
 
@@ -436,6 +438,13 @@ veredicto en una línea.>
 | ✅ Resueltos | |
 | ⏳ Siguen abiertos | |
 | 🆕 Nuevos | |
+
+<Solo si el informe anterior usaba IDs de otro formato. Si no, borrá la tabla.>
+
+| ID anterior | ID nuevo | Estado |
+|---|---|---|
+| `HIGH-002` | `ALTO-001` | ✅ Resuelto |
+| `MED-001` | `MEDIO-001` | ⏳ Abierto |
 
 ## Conclusión
 
